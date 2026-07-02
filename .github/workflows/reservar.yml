@@ -1,0 +1,64 @@
+name: Reservar clase CORE
+
+on:
+  schedule:
+    # 02:50 UTC = 23:50 en Argentina (UTC-3), de lunes a viernes.
+    # El bot arranca ~11 min antes y ESPERA internamente hasta las 00:01 AR
+    # para disparar la reserva, esquivando la impuntualidad del cron de GitHub.
+    - cron: "50 2 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (llega al botón Reservar pero NO reserva)"
+        type: boolean
+        default: true
+      now:
+        description: "Ejecutar ya (no esperar hasta las 00:01)"
+        type: boolean
+        default: true
+
+jobs:
+  reservar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Ejecutar bot
+        env:
+          COREFIT_EMAIL: ${{ secrets.COREFIT_EMAIL }}
+          COREFIT_PASSWORD: ${{ secrets.COREFIT_PASSWORD }}
+          # Opcionales (si no se definen, usan los valores por defecto del script):
+          COREFIT_TARGET_TIME: ${{ vars.COREFIT_TARGET_TIME }}
+          COREFIT_DAYS_AHEAD: ${{ vars.COREFIT_DAYS_AHEAD }}
+          COREFIT_FIRE_TIME: ${{ vars.COREFIT_FIRE_TIME }}
+          COREFIT_BRANCH: ${{ vars.COREFIT_BRANCH }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+            [ "${{ inputs.now }}" = "true" ] && ARGS="$ARGS --now"
+          fi
+          echo "Ejecutando: python reservar.py $ARGS"
+          python reservar.py $ARGS
+
+      - name: Subir screenshots (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,21 @@
+# Credenciales locales — NUNCA subir
+.env
+
+# Screenshots de debug
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Config local del harness Claude Code
+.claude/
