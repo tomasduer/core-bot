@@ -56,17 +56,25 @@ def _load_dotenv():
             os.environ.setdefault(key, val)
 
 
+def _env(key, default):
+    """Devuelve el valor de la variable de entorno; si falta O está vacía, el default.
+    (En GitHub Actions, un ${{ vars.X }} no definido llega como string vacío '')."""
+    v = os.environ.get(key, "")
+    v = v.strip() if v is not None else ""
+    return v if v != "" else default
+
+
 def load_config():
     _load_dotenv()
-    tz = ZoneInfo(os.environ.get("COREFIT_TZ", "America/Argentina/Buenos_Aires"))
+    tz = ZoneInfo(_env("COREFIT_TZ", "America/Argentina/Buenos_Aires"))
     return {
-        "email": os.environ.get("COREFIT_EMAIL", "").strip(),
-        "password": os.environ.get("COREFIT_PASSWORD", ""),
-        "target_time": os.environ.get("COREFIT_TARGET_TIME", "08:00").strip(),
-        "days_ahead": int(os.environ.get("COREFIT_DAYS_AHEAD", "7")),
-        "fire_time": os.environ.get("COREFIT_FIRE_TIME", "00:01").strip(),
-        "branch": os.environ.get("COREFIT_BRANCH", "").strip(),
-        "headless": os.environ.get("COREFIT_HEADLESS", "true").lower() != "false",
+        "email": _env("COREFIT_EMAIL", ""),
+        "password": os.environ.get("COREFIT_PASSWORD", ""),  # sin strip por si tiene espacios
+        "target_time": _env("COREFIT_TARGET_TIME", "08:00"),
+        "days_ahead": int(_env("COREFIT_DAYS_AHEAD", "7")),
+        "fire_time": _env("COREFIT_FIRE_TIME", "00:01"),
+        "branch": _env("COREFIT_BRANCH", ""),
+        "headless": _env("COREFIT_HEADLESS", "true").lower() != "false",
         "tz": tz,
     }
 
