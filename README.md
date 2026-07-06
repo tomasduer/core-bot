@@ -20,10 +20,32 @@ de **lunes a viernes**, apenas se abren los cupos.
 5. Verifica que la clase haya quedado reservada y guarda un screenshot.
 
 ### Sobre el horario ⏰
-El cron de GitHub Actions **no es puntual** (puede atrasarse varios minutos, sobre
-todo a la medianoche). Por eso el workflow arranca a las **23:50 AR** y el propio
-bot **espera hasta las 00:01** para disparar. Así la hora la controla el bot y no
-el cron.
+El cron interno de GitHub Actions dispara en este repo con **3 a 4,5 horas de
+retraso** (comprobado en producción: GitHub encola los `schedule` con baja
+prioridad). Por eso el disparo puntual lo hace **cron-job.org** (gratis), que a
+las **00:02 AR** de lunes a viernes dispara el workflow por API
+(`workflow_dispatch`, que sí corre al instante). Los crons internos quedan como
+**respaldo**: corren tarde (~03:00-05:00 AM) pero aseguran la reserva si el
+disparador externo falla. El bot es idempotente: si la clase ya está reservada,
+no hace nada, así que pueden convivir varios disparos.
+
+#### Configuración del disparador externo (cron-job.org)
+1. **Token de GitHub** (una vez): GitHub → Settings → Developer settings →
+   *Fine-grained personal access tokens* → Generate new token.
+   - Repository access: **Only select repositories** → `core-bot`
+   - Permissions → Repository permissions → **Actions: Read and write**
+   - Expiración: la máxima que permita (anotar renovarlo).
+2. **Cronjob** en [cron-job.org](https://console.cron-job.org) (cuenta gratis):
+   - URL: `https://api.github.com/repos/tomasduer/core-bot/actions/workflows/reservar.yml/dispatches`
+   - Método: **POST**
+   - Horario: lunes a viernes **00:02**, zona `America/Argentina/Buenos_Aires`
+   - Headers:
+     - `Authorization`: `Bearer <EL_TOKEN>`
+     - `Accept`: `application/vnd.github+json`
+     - `Content-Type`: `application/json`
+   - Body: `{"ref":"main","inputs":{"dry_run":"false","now":"true"}}`
+3. Probar con el botón de test del cronjob y verificar que en la pestaña
+   **Actions** del repo aparezca una corrida nueva (evento `workflow_dispatch`).
 
 ---
 
@@ -79,12 +101,14 @@ Variables de entorno: ver [`.env.example`](.env.example).
 
 ## ⚠️ Riesgos conocidos
 
-1. **Puntualidad del cron de GitHub.** Mitigado con el arranque anticipado + espera
-   interna, pero si GitHub se atrasa mucho, la reserva podría dispararse tarde.
-2. **Bloqueo de IP.** La web podría rechazar las IP de datacenter de GitHub. Si en
-   las pruebas ves errores de acceso/timeouts de login, la alternativa más confiable
-   es correr el bot en **tu propia PC** con el **Programador de tareas de Windows**
-   (IP residencial + hora exacta). El mismo `reservar.py` sirve para las dos cosas.
+1. **Puntualidad del cron de GitHub.** Comprobado: dispara con 3-4,5 h de retraso.
+   Mitigado con el disparador externo (cron-job.org) como principal y los crons
+   internos como respaldo tardío.
+2. **Errores transitorios del sitio** de madrugada. Mitigado con reintento
+   automático (60s) dentro de cada corrida + disparos redundantes.
+3. **Bloqueo de IP.** Verificado que hoy NO ocurre (Actions entra y reserva OK).
+   Si algún día pasa, la alternativa es correr el bot en **tu propia PC** con el
+   **Programador de tareas de Windows**. El mismo `reservar.py` sirve.
 
 ---
 

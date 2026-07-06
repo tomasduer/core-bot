@@ -2,14 +2,15 @@ name: Reservar clase CORE
 
 on:
   schedule:
-    # Varios disparos ESCALONADOS para dar redundancia ante la impuntualidad/caídas
-    # del cron de GitHub. El bot es idempotente: si la clase ya está reservada, no
-    # hace nada. Horarios en UTC (Argentina = UTC-3), de lunes a viernes:
-    - cron: "50 2 * * 1-5"   # 23:50 AR (noche anterior) -> espera hasta 00:01 y reserva
-    - cron: "10 3 * * 1-5"   # 00:10 AR -> reserva de inmediato (respaldo 1)
-    - cron: "30 3 * * 1-5"   # 00:30 AR -> reserva de inmediato (respaldo 2)
-    # TEMPORAL - prueba única de que los cron disparan en este repo. BORRAR luego.
-    - cron: "40 3 3 7 *"     # 03:40 UTC del 3-jul-2026 (00:40 AR)
+    # RESPALDO. Comprobado (jul 2026): el cron interno de GitHub dispara en este
+    # repo con 3 a 4,5 horas de RETRASO (encola los 'schedule' con baja prioridad;
+    # no es configurable). El disparo PUNTUAL de las 00:02 AR lo hace cron-job.org
+    # vía workflow_dispatch, que sí corre al instante (ver README). Estos crons
+    # quedan como red de seguridad; el bot es idempotente (no duplica reservas).
+    # Horarios NOMINALES en UTC (Argentina = UTC-3), de lunes a viernes:
+    - cron: "50 2 * * 1-5"   # nominal 23:50 AR -> en la práctica ~02:30-04:30 AR
+    - cron: "10 3 * * 1-5"   # nominal 00:10 AR (respaldo)
+    - cron: "30 3 * * 1-5"   # nominal 00:30 AR (respaldo)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -56,7 +57,9 @@ jobs:
             [ "${{ inputs.now }}" = "true" ] && ARGS="$ARGS --now"
           fi
           echo "Ejecutando: python reservar.py $ARGS"
-          python reservar.py $ARGS
+          # Reintento automático: una corrida programada falló por un error
+          # transitorio del sitio; si falla, esperamos 60s y probamos de nuevo.
+          python reservar.py $ARGS || { echo "Falló; reintento en 60s..."; sleep 60; python reservar.py $ARGS; }
 
       - name: Subir screenshots (debug)
         if: always()
