@@ -2,23 +2,19 @@ name: Reservar clase CORE
 
 on:
   schedule:
-    # RESPALDO. Comprobado (jul 2026): el cron interno de GitHub dispara en este
-    # repo con 3 a 4,5 horas de RETRASO (encola los 'schedule' con baja prioridad;
-    # no es configurable). El disparo PUNTUAL de las 00:02 AR lo hace cron-job.org
-    # vía workflow_dispatch, que sí corre al instante (ver README). Estos crons
-    # quedan como red de seguridad; el bot es idempotente (no duplica reservas).
+    # RESPALDO. La inscripción abre a las 08:00 AR (misma hora que la clase, una
+    # semana antes). El disparo PUNTUAL de las 08:00 lo hace cron-job.org vía
+    # workflow_dispatch, que corre al instante (ver README). Estos crons quedan de
+    # red de seguridad, PERO el cron interno de GitHub se atrasa 3-4,5 h, así que
+    # reservan recién ~11:00-13:00 AR (solo sirven si el cupo sigue libre a esa
+    # hora). El bot es idempotente: no duplica reservas.
     # Horarios NOMINALES en UTC (Argentina = UTC-3), de lunes a viernes:
-    - cron: "50 2 * * 1-5"   # nominal 23:50 AR -> en la práctica ~02:30-04:30 AR
-    - cron: "10 3 * * 1-5"   # nominal 00:10 AR (respaldo)
-    - cron: "30 3 * * 1-5"   # nominal 00:30 AR (respaldo)
+    - cron: "0 11 * * 1-5"    # nominal 08:00 AR (respaldo tardío)
+    - cron: "20 11 * * 1-5"   # nominal 08:20 AR (respaldo tardío)
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Dry-run (llega al botón Reservar pero NO reserva)"
-        type: boolean
-        default: true
-      now:
-        description: "Ejecutar ya (no esperar hasta las 00:01)"
         type: boolean
         default: true
 
@@ -51,14 +47,15 @@ jobs:
           COREFIT_FIRE_TIME: ${{ vars.COREFIT_FIRE_TIME }}
           COREFIT_BRANCH: ${{ vars.COREFIT_BRANCH }}
         run: |
-          ARGS=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-            [ "${{ inputs.now }}" = "true" ] && ARGS="$ARGS --now"
+          # Siempre reserva de inmediato (--now): el disparo (cron-job.org a las
+          # 08:00, o el cron de respaldo aún más tarde) ocurre cuando la inscripción
+          # ya está abierta, así que no hace falta esperar.
+          ARGS="--now"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
           fi
           echo "Ejecutando: python reservar.py $ARGS"
-          # Reintento automático: una corrida programada falló por un error
-          # transitorio del sitio; si falla, esperamos 60s y probamos de nuevo.
+          # Reintento automático ante un error transitorio del sitio: espera 60s y reintenta.
           python reservar.py $ARGS || { echo "Falló; reintento en 60s..."; sleep 60; python reservar.py $ARGS; }
 
       - name: Subir screenshots (debug)

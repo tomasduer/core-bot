@@ -4,19 +4,21 @@
 Bot de reservas CORE (corefit.misactividades.com)
 
 Reserva automaticamente la clase de las 08:00 (o la primera clase del dia si ese
-dia no hay 8am) para el dia +7, disparando a las 00:01 hora de Argentina.
+dia no hay 8am) para el dia +7. La inscripcion a cada clase se habilita a la MISMA
+hora de la clase, una semana antes (la de 08:00 abre a las 08:00 de la semana
+previa), asi que el bot dispara a las 08:00 hora de Argentina.
 
 Uso:
     python reservar.py            # modo real (reserva de verdad)
     python reservar.py --dry-run  # hace TODO menos el click final "Reservar"
-    python reservar.py --now      # no espera hasta las 00:01, ejecuta ya
+    python reservar.py --now      # no espera; reserva de inmediato
 
 Configuracion por variables de entorno (ver .env.example):
     COREFIT_EMAIL      (obligatoria)  email de login
     COREFIT_PASSWORD   (obligatoria)  contrasena de login
     COREFIT_TARGET_TIME  (def 08:00)  horario objetivo
     COREFIT_DAYS_AHEAD   (def 7)      cuantos dias hacia adelante reservar
-    COREFIT_FIRE_TIME    (def 00:01)  hora local a la que dispara la reserva
+    COREFIT_FIRE_TIME    (def 08:00)  hora local en que abre la inscripcion
     COREFIT_TZ           (def America/Argentina/Buenos_Aires)
     COREFIT_BRANCH       (def vacio)  nombre de sucursal (vacio = la que viene por defecto)
     COREFIT_HEADLESS     (def true)   correr sin ventana
@@ -72,7 +74,7 @@ def load_config():
         "password": os.environ.get("COREFIT_PASSWORD", ""),  # sin strip por si tiene espacios
         "target_time": _env("COREFIT_TARGET_TIME", "08:00"),
         "days_ahead": int(_env("COREFIT_DAYS_AHEAD", "7")),
-        "fire_time": _env("COREFIT_FIRE_TIME", "00:01"),
+        "fire_time": _env("COREFIT_FIRE_TIME", "08:00"),
         "branch": _env("COREFIT_BRANCH", ""),
         "headless": _env("COREFIT_HEADLESS", "true").lower() != "false",
         "tz": tz,
@@ -98,20 +100,16 @@ def shot(page, name):
 
 
 # --------------------------------------------------------------------------- #
-# Timing: esperar hasta las 00:01 AR
+# Timing: esperar hasta la hora de inscripción (08:00 AR)
 # --------------------------------------------------------------------------- #
 def compute_fire_datetime(now, fire_time):
-    """Devuelve el datetime (tz-aware) del proximo disparo.
+    """Devuelve el datetime (tz-aware) de HOY a la hora fire_time.
 
-    Si estamos a la tarde/noche (hora >= 12), el disparo es la medianoche que
-    viene (dia siguiente) a las fire_time. Si ya estamos pasada la medianoche,
-    es hoy a las fire_time (y si ya paso, se dispara de inmediato)."""
+    Si esa hora ya pasó, wait_until lo detecta y ejecuta de inmediato. El disparo
+    (cron-job.org o el cron de respaldo) ocurre a las 08:00 o después, siempre el
+    mismo día, así que no hay que cruzar a mañana."""
     hh, mm = (int(x) for x in fire_time.split(":"))
-    if now.hour >= 12:
-        base = now + timedelta(days=1)
-    else:
-        base = now
-    return base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
 def wait_until(target_dt, tz, max_minutes=30):
@@ -319,18 +317,18 @@ def run(cfg, dry_run, fire_now):
         page.set_default_timeout(20000)
 
         try:
-            # 1) Login + calentar sesión antes de la medianoche.
+            # 1) Login + calentar sesión antes de la hora de inscripción.
             login(page, cfg["email"], cfg["password"])
             go_to_bookings(page)
             select_branch(page, cfg["branch"])
             shot(page, "01_prelogin_bookings")
 
-            # 2) Esperar hasta las 00:01 AR (salvo --now).
+            # 2) Esperar hasta la hora de inscripción (08:00 AR) (salvo --now).
             if not fire_now:
                 fire = compute_fire_datetime(datetime.now(tz), cfg["fire_time"])
                 wait_until(fire, tz)
 
-            # 3) Recargar para que aparezca el nuevo día +7 (los cupos abren a las 00:00).
+            # 3) Recargar para tomar el día +7 recién habilitado (la inscripción abre a las 08:00).
             log("Recargando para tomar el día recién abierto...")
             page.goto(BASE_URL, wait_until="domcontentloaded")
             if not ensure_bookings(page, cfg["email"], cfg["password"]):
@@ -428,7 +426,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Hace todo menos el click final de reservar.")
     parser.add_argument("--now", action="store_true",
-                        help="No espera hasta las 00:01; ejecuta de inmediato.")
+                        help="No espera hasta la hora de inscripción; reserva de inmediato.")
     args = parser.parse_args()
 
     # Salida UTF-8 (para que los emojis/✔ no rompan en la consola de Windows).

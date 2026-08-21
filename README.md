@@ -3,8 +3,9 @@
 Reserva automáticamente tu clase en **corefit.misactividades.com** todos los días
 de **lunes a viernes**, apenas se abren los cupos.
 
-- Cada día a las **00:01 (hora Argentina)** reserva la clase de las **08:00** para
-  el día **+7** (la semana siguiente).
+- Cada día a las **08:00 (hora Argentina)** reserva la clase de las **08:00** para
+  el día **+7** (la semana siguiente). La inscripción a cada clase se habilita a la
+  **misma hora de la clase**, una semana antes.
 - Si ese día no hay clase a las 08:00 (ej. los jueves, que arrancan 09:00), reserva
   **la primera clase del día**.
 - Corre solo en **GitHub Actions** (no necesitás dejar la PC prendida).
@@ -14,20 +15,20 @@ de **lunes a viernes**, apenas se abren los cupos.
 ## 🧠 Cómo funciona
 
 1. Inicia sesión con tu usuario y contraseña.
-2. Entra a **Reservas** y **espera hasta las 00:01 AR** para disparar.
-3. Recarga, selecciona el día +7 (por el atributo `data-date`, súper confiable).
-4. Busca la clase de las 08:00 (o la primera del día) y toca **Reservar**.
+2. Recarga y selecciona el día **+7** (por el atributo `data-date`, súper confiable).
+3. Busca la clase de las 08:00 (o la primera del día) y toca **Reservar**.
+4. Acepta el modal de **"Condiciones de reserva"**.
 5. Verifica que la clase haya quedado reservada y guarda un screenshot.
 
 ### Sobre el horario ⏰
-El cron interno de GitHub Actions dispara en este repo con **3 a 4,5 horas de
-retraso** (comprobado en producción: GitHub encola los `schedule` con baja
-prioridad). Por eso el disparo puntual lo hace **cron-job.org** (gratis), que a
-las **00:02 AR** de lunes a viernes dispara el workflow por API
-(`workflow_dispatch`, que sí corre al instante). Los crons internos quedan como
-**respaldo**: corren tarde (~03:00-05:00 AM) pero aseguran la reserva si el
-disparador externo falla. El bot es idempotente: si la clase ya está reservada,
-no hace nada, así que pueden convivir varios disparos.
+La inscripción a cada clase se habilita **a la misma hora de la clase, una semana
+antes**: la de las 08:00 abre a las **08:00 AR** del mismo día de la semana previa.
+Por eso el bot dispara a las **08:00**. El disparo puntual lo hace **cron-job.org**
+(gratis), que a las **08:00 AR** de lunes a viernes dispara el workflow por API
+(`workflow_dispatch`, que corre al instante). El cron interno de GitHub se atrasa
+3-4,5 h, así que queda solo de **respaldo tardío** (reserva ~11:00-13:00 AR, útil
+únicamente si el cupo sigue libre a esa hora). El bot es idempotente: si la clase
+ya está reservada, no hace nada, así que pueden convivir varios disparos.
 
 #### Configuración del disparador externo (cron-job.org)
 1. **Token de GitHub** (una vez): GitHub → Settings → Developer settings →
@@ -38,12 +39,12 @@ no hace nada, así que pueden convivir varios disparos.
 2. **Cronjob** en [cron-job.org](https://console.cron-job.org) (cuenta gratis):
    - URL: `https://api.github.com/repos/tomasduer/core-bot/actions/workflows/reservar.yml/dispatches`
    - Método: **POST**
-   - Horario: lunes a viernes **00:02**, zona `America/Argentina/Buenos_Aires`
+   - Horario: lunes a viernes **08:00**, zona `America/Argentina/Buenos_Aires`
    - Headers:
      - `Authorization`: `Bearer <EL_TOKEN>`
      - `Accept`: `application/vnd.github+json`
      - `Content-Type`: `application/json`
-   - Body: `{"ref":"main","inputs":{"dry_run":"false","now":"true"}}`
+   - Body: `{"ref":"main","inputs":{"dry_run":"false"}}`
 3. Probar con el botón de test del cronjob y verificar que en la pestaña
    **Actions** del repo aparezca una corrida nueva (evento `workflow_dispatch`).
 
@@ -60,7 +61,7 @@ no hace nada, así que pueden convivir varios disparos.
 3. (Opcional) En la misma pantalla, pestaña **Variables**, podés crear:
    - `COREFIT_TARGET_TIME` (ej. `08:00`)
    - `COREFIT_DAYS_AHEAD` (ej. `7`)
-   - `COREFIT_FIRE_TIME` (ej. `00:01`)
+   - `COREFIT_FIRE_TIME` (ej. `08:00`)
    - `COREFIT_BRANCH` (ej. `BELGRANO, ARCOS` — vacío usa la sucursal por defecto)
 4. Repo → pestaña **Actions** → habilitá los workflows si te lo pide.
 
@@ -72,8 +73,8 @@ no hace nada, así que pueden convivir varios disparos.
 
 ### En GitHub (recomendado)
 Repo → **Actions** → **Reservar clase CORE** → **Run workflow**.
-Dejá `dry_run = true` y `now = true`: hace **todo el flujo menos el click final**
-de reservar. Después mirá el log y descargá el artifact **screenshots**.
+Dejá `dry_run = true`: hace **todo el flujo menos el click final** de reservar.
+Después mirá el log y descargá el artifact **screenshots**.
 
 ### En tu PC
 ```bash
@@ -83,7 +84,7 @@ python -m playwright install chromium
 # copiá .env.example a .env y completá tus datos, luego:
 python reservar.py --dry-run --now     # prueba todo, sin reservar
 python reservar.py --now               # reserva YA (para el día +7)
-python reservar.py                     # espera hasta las 00:01 y reserva
+python reservar.py                     # espera hasta las 08:00 y reserva
 ```
 
 ---
