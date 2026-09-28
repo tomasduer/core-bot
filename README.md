@@ -20,31 +20,36 @@ de **lunes a viernes**, apenas se abren los cupos.
 4. Acepta el modal de **"Condiciones de reserva"**.
 5. Verifica que la clase haya quedado reservada y guarda un screenshot.
 
-### Sobre el horario ⏰
+### Sobre el horario ⏰ (¡lo más importante!)
 La inscripción a cada clase se habilita **a la misma hora de la clase, una semana
 antes**: la de las 08:00 abre a las **08:00 AR** del mismo día de la semana previa.
-Por eso el bot dispara a las **08:00**. El disparo puntual lo hace **cron-job.org**
-(gratis), que a las **08:00 AR** de lunes a viernes dispara el workflow por API
-(`workflow_dispatch`, que corre al instante). El cron interno de GitHub se atrasa
-3-4,5 h, así que queda solo de **respaldo tardío** (reserva ~11:00-13:00 AR, útil
-únicamente si el cupo sigue libre a esa hora). El bot es idempotente: si la clase
-ya está reservada, no hace nada, así que pueden convivir varios disparos.
 
-#### Configuración del disparador externo (cron-job.org)
-1. **Token de GitHub** (una vez): GitHub → Settings → Developer settings →
-   *Fine-grained personal access tokens* → Generate new token.
+⚠️ **El cron interno de GitHub NO sirve para esto: se atrasa 4-6 h**, así que el bot
+correría recién ~12:00-14:00 AR, cuando los cupos de las 08:00 ya están llenos. Por
+eso **NUNCA reserva si se depende del cron de GitHub** (queda solo de respaldo).
+
+✅ **El disparo puntual lo hace [cron-job.org](https://console.cron-job.org)** (gratis):
+unos minutos antes de las 08:00 dispara el workflow por API (`workflow_dispatch`,
+que corre al instante). El bot hace login, se "calienta" y **espera hasta las 08:00
+exactas** para reservar. El bot es idempotente: si la clase ya está reservada, no
+hace nada, así que pueden convivir varios disparos.
+
+#### Configuración del disparador externo (cron-job.org) — IMPRESCINDIBLE
+1. **Token de GitHub** (una vez): [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
    - Repository access: **Only select repositories** → `core-bot`
    - Permissions → Repository permissions → **Actions: Read and write**
    - Expiración: la máxima que permita (anotar renovarlo).
+   - Generate → **copiar el token** (empieza con `github_pat_...`).
 2. **Cronjob** en [cron-job.org](https://console.cron-job.org) (cuenta gratis):
    - URL: `https://api.github.com/repos/tomasduer/core-bot/actions/workflows/reservar.yml/dispatches`
    - Método: **POST**
-   - Horario: lunes a viernes **08:00**, zona `America/Argentina/Buenos_Aires`
+   - Horario: lunes a viernes **07:55**, zona `America/Argentina/Buenos_Aires`
+     (unos minutos antes; el bot espera y dispara a las 08:00 exactas)
    - Headers:
      - `Authorization`: `Bearer <EL_TOKEN>`
      - `Accept`: `application/vnd.github+json`
      - `Content-Type`: `application/json`
-   - Body: `{"ref":"main","inputs":{"dry_run":"false"}}`
+   - Body: `{"ref":"main","inputs":{"dry_run":"false","now":"false"}}`
 3. Probar con el botón de test del cronjob y verificar que en la pestaña
    **Actions** del repo aparezca una corrida nueva (evento `workflow_dispatch`).
 

@@ -17,6 +17,10 @@ on:
         description: "Dry-run (llega al botón Reservar pero NO reserva)"
         type: boolean
         default: true
+      now:
+        description: "Reservar YA (sin esperar la hora de inscripción). cron-job.org manda false."
+        type: boolean
+        default: true
 
 jobs:
   reservar:
@@ -47,12 +51,18 @@ jobs:
           COREFIT_FIRE_TIME: ${{ vars.COREFIT_FIRE_TIME }}
           COREFIT_BRANCH: ${{ vars.COREFIT_BRANCH }}
         run: |
-          # Siempre reserva de inmediato (--now): el disparo (cron-job.org a las
-          # 08:00, o el cron de respaldo aún más tarde) ocurre cuando la inscripción
-          # ya está abierta, así que no hace falta esperar.
-          ARGS="--now"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
-            ARGS="$ARGS --dry-run"
+          # schedule = respaldo tardío (el cron interno de GitHub corre ~mediodía) ->
+          #   reservar de inmediato (--now), la inscripción abrió hace rato.
+          # workflow_dispatch = disparo PUNTUAL de cron-job.org, que dispara unos
+          #   minutos ANTES de las 08:00 con now=false: el bot hace login y se
+          #   "calienta", y espera hasta las 08:00 exactas para reservar (ver README).
+          #   Los runs manuales usan los defaults (now=true = reservar ya).
+          ARGS=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="--now"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+            [ "${{ inputs.now }}" = "true" ] && ARGS="$ARGS --now"
           fi
           echo "Ejecutando: python reservar.py $ARGS"
           # Reintento automático ante un error transitorio del sitio: espera 60s y reintenta.
