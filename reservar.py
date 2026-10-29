@@ -36,6 +36,11 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://corefit.misactividades.com"
+# Desde la versión 9.7 del sitio (oct-2026), tras tocar "Reservar" el sitio consulta
+# /bookings/checkconditions antes de mostrar el modal: tarda ~6 s en horario normal
+# y bastante más a las 08:00. Esperamos el modal con margen amplio.
+MODAL_TIMEOUT_MS = 45000
+MAX_INTENTOS = 4
 SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 
 
@@ -261,6 +266,8 @@ def get_classes(page):
                 time: m ? m[1] : null,
                 full: /cupo completo/i.test(txt),
                 reserved: /green/.test(cls),
+                // Fila amarilla con la leyenda "En lista de espera" = ya estás anotado en la espera.
+                waitlisted: /en lista de espera/i.test(txt),
                 text: txt.slice(0, 70),
             };
         }).filter(c => c.time);
@@ -280,20 +287,169 @@ def pick_target_class(classes, target_time):
     return None, "sin-clases"
 
 
-def verify_reserved(page, email, password, date_str, target_time):
-    """Vuelve a la lista del dia y confirma que la clase quedó en verde (reservada)."""
+def hard_reload(page):
+    """Recarga completa del documento. Navegar solo por '#hash' (SPA) no limpia
+    modales/overlays trabados; un reload sí."""
+    page.reload(wait_until="domcontentloaded")
+
+
+def detail_state(page):
+    """Estado de la clase leído en la pantalla de DETALLE (la fuente confiable):
+    si el botón dice 'Anular' ya estás anotado -> 'reservada' o 'espera' (lista de
+    espera; la fila de la lista NO cambia de color en ese caso). Si dice 'Reservar'
+    -> None (no estás anotado)."""
+    anular = page.locator("a, button").filter(has_text=re.compile(r"^\s*Anular\s*$"))
+    if not any(anular.nth(i).is_visible() for i in range(anular.count())):
+        return None
+    body = (page.inner_text("body") or "").lower()
+    m = re.search(r"en lista de espera\s*\(#\s*(\d+)\)", body)
+    if m or "en lista de espera" in body:
+        return f"espera (puesto #{m.group(1)})" if m else "espera"
+    return "reservada"
+
+
+def open_detail(page, class_id):
+    """Abre el detalle de una clase y espera a que termine de cargar."""
+    page.click(f'[id="{class_id}"]')
+    page.wait_for_selector("#register", timeout=15000)
+    # Que el detalle termine de cargar antes de leerlo o tocar botones (si no, a
+    # veces el click no dispara la consulta de condiciones y el modal no aparece).
     try:
-        page.goto(f"{BASE_URL}/#home", wait_until="domcontentloaded")
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except PWTimeout:
+        pass
+
+
+def class_state(c):
+    """'reservada' | 'espera' | None según la fila de la clase."""
+    if c.get("reserved"):
+        return "reservada"
+    if c.get("waitlisted"):
+        return "espera"
+    return None
+
+
+def verify_reserved(page, email, password, date_str, target_time):
+    """Vuelve a la lista del dia y devuelve el estado de la clase:
+    'reservada' (verde), 'espera' (anotado en lista de espera) o None."""
+    try:
+        hard_reload(page)
         ensure_bookings(page, email, password)
         if not select_date(page, date_str):
-            return False
-        classes = get_classes(page)
-        for c in classes:
+            return None
+        for c in get_classes(page):
             if c["time"] == target_time:
-                return c["reserved"]
+                if c["reserved"]:
+                    return "reservada"
+                open_detail(page, c["id"])
+                return detail_state(page)
     except Exception as e:
         log(f"AVISO: no pude verificar la reserva: {e}")
-    return False
+    return None
+
+
+def intentar_reserva(page, cfg, target_date, dry_run, intento):
+    """Un intento completo sobre el día ya seleccionado.
+    Devuelve un exit code (0 = listo) o None si hay que reintentar."""
+    classes = get_classes(page)
+    log(f"Clases del {target_date}: " +
+        ", ".join(f"{c['time']}{'(lleno)' if c['full'] else ''}"
+                  f"{'(' + class_state(c) + ')' if class_state(c) else ''}" for c in classes))
+    chosen, reason = pick_target_class(classes, cfg["target_time"])
+    if chosen is None:
+        shot(page, "err_no_classes")
+        raise RuntimeError(f"No hay clases listadas para {target_date}.")
+    log(f"Clase elegida: {chosen['time']} [{reason}]  id={chosen['id']}")
+
+    estado = class_state(chosen)
+    if estado == "reservada":
+        log(f"La clase de las {chosen['time']} YA figura reservada. Nada que hacer. ✔")
+        shot(page, "02_already_reserved")
+        return 0
+    if estado == "espera":
+        log(f"Ya estás anotado en LISTA DE ESPERA para las {chosen['time']}. Nada más que hacer.")
+        shot(page, "02_already_waitlist")
+        return 0
+
+    # Abrir el detalle de la clase y leer el estado REAL ahí.
+    open_detail(page, chosen["id"])
+    shot(page, f"03_detail_i{intento}")
+    estado = detail_state(page)
+    if estado:
+        # El botón dice "Anular": ya estás anotado. NUNCA tocarlo (cancelaría).
+        log(f"Ya estás anotado en las {chosen['time']}: {estado.upper()}. Nada que hacer. ✔")
+        return 0
+
+    boton = page.locator("#register")
+    texto_boton = (boton.inner_text() or "").strip()
+    if "reservar" not in texto_boton.lower():
+        log(f"AVISO: el botón dice '{texto_boton}' (esperaba 'Reservar'); no lo toco.")
+        return None
+    if "lista de espera" in (page.inner_text("body") or "").lower():
+        log("AVISO: la clase figura llena; 'Reservar' entra en LISTA DE ESPERA.")
+
+    # Tocar 'Reservar' -> el sitio consulta checkconditions y recién ahí abre el modal.
+    log("Tocando 'Reservar'...")
+    t0 = time.monotonic()
+    boton.click()
+    try:
+        page.wait_for_selector("#modalBookingConditionsConfirm", state="visible",
+                               timeout=MODAL_TIMEOUT_MS)
+    except PWTimeout:
+        log(f"AVISO: el modal de condiciones no apareció en {MODAL_TIMEOUT_MS // 1000}s.")
+        shot(page, f"err_sin_modal_i{intento}")
+        return None
+    log(f"Modal de condiciones abierto ({time.monotonic() - t0:.1f}s).")
+    shot(page, f"04_modal_i{intento}")
+
+    if dry_run:
+        log("DRY-RUN: llegué a la confirmación 'Condiciones de reserva' pero NO acepto.")
+        try:
+            page.click("#modalBookingConditions .modal-close")
+        except Exception:
+            pass
+        log("Flujo completo validado. ✔")
+        return 0
+
+    log("Aceptando condiciones de reserva...")
+    # CLAVE (sitio v9.7): esperar la respuesta de POST /bookings/create ANTES de
+    # navegar. Navegar enseguida cortaba el pedido (la reserva no se registraba) y
+    # dejaba el overlay del modal trabado tapando la pantalla.
+    try:
+        with page.expect_response(lambda r: "/bookings/create" in r.url,
+                                  timeout=60000) as resp_info:
+            page.click("#modalBookingConditionsConfirm")
+        resp = resp_info.value
+        log(f"Servidor respondió a /bookings/create: HTTP {resp.status}")
+    except PWTimeout:
+        log("AVISO: el servidor no respondió a /bookings/create en 60s.")
+        shot(page, f"err_sin_respuesta_i{intento}")
+        return None
+    # Mensaje del sitio ("Has REGISTRADO tu reserva", o el error que sea).
+    try:
+        page.wait_for_selector("#toast-container .toast", timeout=10000)
+        log(f"Mensaje del sitio: {page.inner_text('#toast-container').strip()}")
+    except PWTimeout:
+        log("AVISO: el sitio no mostró mensaje de confirmación.")
+    # Esperar a que se cierre el modal y desaparezca el overlay.
+    try:
+        page.wait_for_function("() => !document.querySelector('.modal-overlay')", timeout=15000)
+    except PWTimeout:
+        log("AVISO: el overlay del modal no se cerró solo (se limpia al recargar).")
+    shot(page, f"05_post_reservar_i{intento}")
+
+    estado = verify_reserved(page, cfg["email"], cfg["password"], target_date, chosen["time"])
+    if estado == "reservada":
+        log(f"RESERVA CONFIRMADA: {target_date} {chosen['time']}. ✔")
+        shot(page, "06_verificada")
+        return 0
+    if estado and estado.startswith("espera"):
+        log(f"Quedaste en LISTA DE ESPERA ({estado}): {target_date} {chosen['time']} "
+            "(la clase ya estaba llena).")
+        shot(page, "06_lista_espera")
+        return 0
+    log("No pude confirmar la reserva en este intento.")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -343,71 +499,22 @@ def run(cfg, dry_run, fire_now):
                 shot(page, "err_no_date")
                 raise RuntimeError(f"No apareció el día {target_date} en el selector.")
 
-            # 5) Elegir la clase.
-            classes = get_classes(page)
-            log(f"Clases del {target_date}: " +
-                ", ".join(f"{c['time']}{'(lleno)' if c['full'] else ''}"
-                          f"{'(reservada)' if c['reserved'] else ''}" for c in classes))
-            chosen, reason = pick_target_class(classes, cfg["target_time"])
-            if chosen is None:
-                shot(page, "err_no_classes")
-                raise RuntimeError(f"No hay clases listadas para {target_date}.")
-            log(f"Clase elegida: {chosen['time']} [{reason}]  id={chosen['id']}")
-
-            if chosen["reserved"]:
-                log(f"La clase de las {chosen['time']} YA figura reservada. Nada que hacer. ✔")
-                shot(page, "02_already_reserved")
-                return 0
-
-            # 6) Abrir el detalle de la clase.
-            page.click(f'[id="{chosen["id"]}"]')
-            page.wait_for_selector("#register", timeout=10000)
-            detail = (page.inner_text("body") or "").lower()
-            waitlist = "lista de espera" in detail
-            if waitlist:
-                log("AVISO: la clase figura llena; 'Reservar' entra en LISTA DE ESPERA.")
-            shot(page, "03_detail")
-
-            # 7) Tocar 'Reservar' -> aparece el modal "Condiciones de reserva".
-            log("Tocando 'Reservar'...")
-            page.click("#register")
-            has_modal = True
-            try:
-                page.wait_for_selector("#modalBookingConditionsConfirm", state="visible",
-                                       timeout=8000)
-            except PWTimeout:
-                has_modal = False
-                log("AVISO: no apareció el modal de condiciones (¿reserva directa?).")
-            shot(page, "04_modal_condiciones")
-
-            # 8) Dry-run: cancelar el modal. Real: Aceptar (reserva de verdad).
-            if dry_run:
-                log("DRY-RUN: llegué a la confirmación 'Condiciones de reserva' pero NO acepto.")
-                if has_modal:
-                    try:
-                        page.click("#modalBookingConditions .modal-close")
-                    except Exception:
-                        pass
-                log("Flujo completo validado. ✔")
-                return 0
-
-            if has_modal:
-                log("Aceptando condiciones de reserva...")
-                page.click("#modalBookingConditionsConfirm")
-                page.wait_for_timeout(2500)
-            shot(page, "05_post_reservar")
-
-            # 9) Verificar.
-            ok = verify_reserved(page, cfg["email"], cfg["password"], target_date, chosen["time"])
-            if ok:
-                estado = "EN LISTA DE ESPERA" if waitlist else "CONFIRMADA"
-                log(f"RESERVA {estado}: {target_date} {chosen['time']}. ✔")
-                shot(page, "06_verificada")
-                return 0
-            else:
-                log("No pude CONFIRMAR que la reserva quedó registrada. Revisar screenshots.")
-                shot(page, "err_sin_confirmar")
-                return 2
+            # 5-9) Elegir la clase y reservar, con reintentos dentro de la misma corrida
+            # (a las 08:00 el sitio está saturado y cada segundo cuenta).
+            for intento in range(1, MAX_INTENTOS + 1):
+                if intento > 1:
+                    log(f"--- Reintento {intento}/{MAX_INTENTOS} ---")
+                    hard_reload(page)
+                    if not ensure_bookings(page, cfg["email"], cfg["password"]) \
+                            or not select_date(page, target_date):
+                        log("AVISO: no pude volver al día objetivo; reintento.")
+                        continue
+                resultado = intentar_reserva(page, cfg, target_date, dry_run, intento)
+                if resultado is not None:
+                    return resultado
+            log(f"No pude reservar tras {MAX_INTENTOS} intentos. Revisar screenshots.")
+            shot(page, "err_sin_confirmar")
+            return 2
 
         except Exception as e:
             log(f"ERROR: {e}")
